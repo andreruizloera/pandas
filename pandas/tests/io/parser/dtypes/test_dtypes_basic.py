@@ -116,6 +116,31 @@ def test_raise_on_passed_int_dtype_with_nas(all_parsers):
         parser.read_csv(StringIO(data), dtype={"DOY": np.int64}, skipinitialspace=True)
 
 
+def test_dtype_integer_key_that_is_a_column_name(all_parsers):
+    # GH#67005 an integer dtype key that is also one of the column names is a
+    # label, so it converts that column only, not the column in that position
+    # as well.
+    parser = all_parsers
+    data = "11,12\n12,13"
+
+    result = parser.read_csv(StringIO(data), names=[1, 2], dtype={1: str})
+
+    expected = pd.DataFrame({1: ["11", "12"], 2: [12, 13]})
+    tm.assert_frame_equal(result, expected)
+
+
+@xfail_pyarrow  # the pyarrow engine does not read dtype keys positionally
+def test_dtype_integer_key_that_is_not_a_column_name(all_parsers):
+    # GH#67005 a key that labels no column is still read as a position.
+    parser = all_parsers
+    data = "11,12\n12,13"
+
+    result = parser.read_csv(StringIO(data), names=[1, 2], dtype={0: str})
+
+    expected = pd.DataFrame({1: ["11", "12"], 2: [12, 13]})
+    tm.assert_frame_equal(result, expected)
+
+
 def test_dtype_with_converters(all_parsers):
     parser = all_parsers
     data = """a,b

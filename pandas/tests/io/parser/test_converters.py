@@ -53,6 +53,25 @@ c,4,5,01/03/2009
     tm.assert_frame_equal(result, expected)
 
 
+def test_converters_integer_key_that_is_a_column_name(all_parsers):
+    # GH#67005 an integer converters key that is also one of the column names
+    # is a label, so it converts that column only, not the column in that
+    # position as well.
+    parser = all_parsers
+    data = "11,12\n12,13"
+
+    if parser.engine == "pyarrow":
+        msg = "The 'converters' option is not supported with the 'pyarrow' engine"
+        with pytest.raises(ValueError, match=msg):
+            parser.read_csv(StringIO(data), names=[1, 2], converters={1: str})
+        return
+
+    result = parser.read_csv(StringIO(data), names=[1, 2], converters={1: str})
+
+    expected = pd.DataFrame({1: ["11", "12"], 2: [12, 13]})
+    tm.assert_frame_equal(result, expected)
+
+
 def test_converters_no_implicit_conv(all_parsers):
     # see gh-2184
     parser = all_parsers

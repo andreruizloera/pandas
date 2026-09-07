@@ -595,6 +595,27 @@ def test_na_values_dict_col_index(all_parsers):
     tm.assert_frame_equal(result, expected)
 
 
+def test_na_values_integer_key_that_is_a_column_name(all_parsers):
+    # GH#67005 an integer na_values key that is also one of the column names
+    # is a label, so its tokens apply to that column only, not to the column
+    # in that position as well.
+    parser = all_parsers
+    # The token also appears in the second column, so applying the key
+    # positionally as well is visible in the result.
+    data = "11,12\n12,11"
+    na_values = {1: ["11"]}
+
+    if parser.engine == "pyarrow":
+        msg = "The pyarrow engine doesn't support passing a dict for na_values"
+        with pytest.raises(ValueError, match=msg):
+            parser.read_csv(StringIO(data), names=[1, 2], na_values=na_values)
+        return
+
+    result = parser.read_csv(StringIO(data), names=[1, 2], na_values=na_values)
+    expected = pd.DataFrame({1: [np.nan, 12.0], 2: [12, 11]})
+    tm.assert_frame_equal(result, expected)
+
+
 @pytest.mark.parametrize(
     "data,kwargs,expected",
     [

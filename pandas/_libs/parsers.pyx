@@ -432,6 +432,10 @@ cdef class TextReader:
         # Set by _close, which frees the tokenizer's buffers.  Reading from a
         # closed reader would dereference those freed pointers (GH#66622).
         bint is_closed
+        # Every column label this read can produce.  An integer key in a
+        # dtype/converters/na_values dict is only a column POSITION when it is
+        # not one of these (GH#67005).
+        set column_labels
 
     cdef public:
         int64_t leading_cols, table_width
@@ -670,6 +674,7 @@ cdef class TextReader:
         self.header = header
         self.table_width = table_width
         self.unnamed_cols = unnamed_cols
+        self.column_labels = _column_labels(self.names, header)
 
         if not self.table_width:
             raise EmptyDataError("No columns to parse from file")
@@ -1820,7 +1825,7 @@ cdef class TextReader:
             if isinstance(self.dtype, dict):
                 if name in self.dtype:
                     col_dtype = self.dtype[name]
-                elif i in self.dtype:
+                elif i in self.dtype and i not in self.column_labels:
                     col_dtype = self.dtype[i]
                 elif is_default_dict_dtype:
                     col_dtype = self.dtype[name]
@@ -1839,19 +1844,18 @@ cdef class TextReader:
         if name is not None and name in self.converters:
             return self.converters[name]
 
+        if i in self.column_labels:
+            # i labels some column, so it is that column's key, not a position
+            return None
+
         # Converter for position, if any
         return self.converters.get(i)
 
     cdef _get_na_list(self, Py_ssize_t i, name):
         if isinstance(self.na_values, dict):
-            key = None
-            values = None
+            key = self._get_na_key(i, name)
 
-            if name is not None and name in self.na_values:
-                key = name
-            elif i in self.na_values:
-                key = i
-            else:  # No na_values provided for this column.
+            if key is None:  # No na_values provided for this column.
                 if self.keep_default_na:
                     return _NA_VALUES, set()
 
@@ -1870,15 +1874,23 @@ cdef class TextReader:
             return _ensure_encoded(self.na_values), self.na_fvalues
 
     cdef object _get_na_key(self, Py_ssize_t i, object name):
-        # The na_values entry column i resolves to, mirroring _get_na_list, so
-        # that columns sharing an entry share a hashset. None means "the
-        # defaults", which most columns of a wide file take; keying on i
-        # instead would build and hold one hashset per column.
+        # The na_values entry column i resolves to, and the cache key under
+        # which its hashset is shared by every column resolving to the same
+        # entry. None means "the defaults", which most columns of a wide file
+        # take; keying on i instead would build and hold one hashset per
+        # column.
+        #
+        # This is the ONE place the label-versus-position question is decided
+        # for na_values; _get_na_list calls it rather than repeating the
+        # tests. When the two were separate, the position guard below was
+        # added to _get_na_list only, and the cache then answered from the
+        # unguarded key and handed a column the wrong hashset (GH#67005).
         if not isinstance(self.na_values, dict):
             return None
         if name is not None and name in self.na_values:
             return name
-        if i in self.na_values:
+        if i in self.na_values and i not in self.column_labels:
+            # i labels some column, so it is that column's key, not a position
             return i
         return None
 
@@ -1929,6 +1941,32 @@ cdef class TextReader:
                     return self.header[0][j]
             else:
                 return None
+
+
+cdef set _column_labels(list names, list header):
+    """Every column label a read can produce, for label-versus-position keys.
+
+    ``dtype``, ``converters`` and ``na_values`` all accept a dict keyed by
+    either a column label or a column position, and an integer key is
+    ambiguous when the labels are themselves integers.  The python engine
+    resolves that in ``BaseParser._clean_mapping``: an integer key is a
+    position only when it is not one of the column names.  This is the set
+    that test asks about (GH#67005).
+
+    Labels that cannot be hashed cannot be dict keys either, so they cannot
+    make a key ambiguous and are skipped.
+    """
+    cdef set labels = set()
+    for source in (names, *(header or ())):
+        if source is None:
+            continue
+        for label in source:
+            try:
+                labels.add(label)
+            except TypeError:
+                continue
+    return labels
+
 
 # Factor out code common to TextReader.__dealloc__ and TextReader.close
 # It cannot be a class method, since calling self.close() in __dealloc__
